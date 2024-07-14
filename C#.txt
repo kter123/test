@@ -1,0 +1,70 @@
+#include <windows.h>
+#include <metahost.h>
+#pragma comment(lib, "mscoree.lib")
+
+// {E0486392-A1AD-4D06-BF1C-F7DAF0A3BA29}
+const GUID CLSID_CLRMetaHost = 
+{ 0xE0486392, 0xA1AD, 0x4D06, { 0xBF, 0x1C, 0xF7, 0xDA, 0xF0, 0xA3, 0xBA, 0x29 } };
+
+// {BD39D1D2-BA2F-486A-89B0-B4B0CB466891}
+const GUID IID_ICLRMetaHost = 
+{ 0xBD39D1D2, 0xBA2F, 0x486A, { 0x89, 0xB0, 0xB4, 0xB0, 0xCB, 0x46, 0x68, 0x91 } };
+
+bool LoadAndRunManagedCode()
+{
+    ICLRMetaHost* pMetaHost = nullptr;
+    ICLRRuntimeInfo* pRuntimeInfo = nullptr;
+    ICLRRuntimeHost* pClrRuntimeHost = nullptr;
+
+    HRESULT hr = CLRCreateInstance(CLSID_CLRMetaHost, IID_ICLRMetaHost, (void**)&pMetaHost);
+    if (FAILED(hr))
+        return false;
+
+    hr = pMetaHost->GetRuntime(L"v4.0.30319", IID_ICLRRuntimeInfo, (void**)&pRuntimeInfo);
+    if (FAILED(hr))
+    {
+        pMetaHost->Release();
+        return false;
+    }
+
+    hr = pRuntimeInfo->GetInterface(CLSID_CLRRuntimeHost, IID_ICLRRuntimeHost, (void**)&pClrRuntimeHost);
+    if (FAILED(hr))
+    {
+        pRuntimeInfo->Release();
+        pMetaHost->Release();
+        return false;
+    }
+
+    hr = pClrRuntimeHost->Start();
+    if (FAILED(hr))
+    {
+        pClrRuntimeHost->Release();
+        pRuntimeInfo->Release();
+        pMetaHost->Release();
+        return false;
+    }
+
+    DWORD pReturnValue;
+    hr = pClrRuntimeHost->ExecuteInDefaultAppDomain(L"ManagedLibrary.dll", L"ManagedLibrary.ManagedClass", L"Run", L"", &pReturnValue);
+
+    pClrRuntimeHost->Release();
+    pRuntimeInfo->Release();
+    pMetaHost->Release();
+
+    return SUCCEEDED(hr);
+}
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved)
+{
+    switch (ul_reason_for_call)
+    {
+    case DLL_PROCESS_ATTACH:
+        LoadAndRunManagedCode();
+        break;
+    case DLL_THREAD_ATTACH:
+    case DLL_THREAD_DETACH:
+    case DLL_PROCESS_DETACH:
+        break;
+    }
+    return TRUE;
+}
