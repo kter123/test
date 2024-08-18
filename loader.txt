@@ -1,0 +1,122 @@
+#include <windows.h>
+#include <stdio.h>
+
+#define DEREF_32(name) *(DWORD *)(name)
+
+int main() {
+    char file[20];
+    HANDLE handle;
+    PVOID vpointer;
+    HINSTANCE laddress;
+    LPSTR libname;
+    DWORD size;
+    DWORD EntryAddr;
+    int state;
+    DWORD byteread;
+    PIMAGE_NT_HEADERS nt;
+    PIMAGE_SECTION_HEADER section;
+    DWORD dwValueA;
+    DWORD dwValueB;
+    DWORD dwValueC;
+    DWORD dwValueD;
+
+    printf("Enter file name: ");
+    scanf("%s", &file);
+
+    printf("Reading file..\n");
+    handle = CreateFile(file, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    size = GetFileSize(handle, NULL);
+    vpointer = VirtualAlloc(NULL, size, MEM_COMMIT, PAGE_READWRITE);
+    state = ReadFile(handle, vpointer, size, &byteread, NULL);
+    CloseHandle(handle);
+    printf("You can delete the file now!\n");
+    system("pause");
+
+    nt = PIMAGE_NT_HEADERS(PCHAR(vpointer) + PIMAGE_DOS_HEADER(vpointer)->e_lfanew);
+    handle = GetCurrentProcess();
+    EntryAddr = nt->OptionalHeader.ImageBase + nt->OptionalHeader.AddressOfEntryPoint;
+
+    PVOID memalloc = VirtualAllocEx(
+        handle,
+        PVOID(nt->OptionalHeader.ImageBase),
+        nt->OptionalHeader.SizeOfImage,
+        MEM_RESERVE | MEM_COMMIT,
+        PAGE_EXECUTE_READWRITE
+    );
+
+    if ((DWORD)memalloc != nt->OptionalHeader.ImageBase) {
+        DWORD delta = (DWORD)memalloc - nt->OptionalHeader.ImageBase;
+        if (nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) {
+            PIMAGE_BASE_RELOCATION pReloc = (PIMAGE_BASE_RELOCATION)((DWORD)memalloc +
+                nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
+
+            while (pReloc->VirtualAddress) {
+                DWORD* pPatchAddr = (DWORD*)((DWORD)memalloc + pReloc->VirtualAddress);
+                WORD* pFixup = (WORD*)((DWORD)pReloc + sizeof(IMAGE_BASE_RELOCATION));
+                for (UINT i = 0; i < (pReloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD); i++) {
+                    if (pFixup[i] >> 12 == IMAGE_REL_BASED_HIGHLOW) {
+                        *(DWORD*)((DWORD)pPatchAddr + (pFixup[i] & 0xFFF)) += delta;
+                    }
+                }
+                pReloc = (PIMAGE_BASE_RELOCATION)((DWORD)pReloc + pReloc->SizeOfBlock);
+            }
+        }
+    }
+
+    WriteProcessMemory(handle, memalloc, vpointer, nt->OptionalHeader.SizeOfHeaders, 0);
+    section = IMAGE_FIRST_SECTION(nt);
+    for (ULONG i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        DWORD sectionPermissions = PAGE_READONLY;
+
+        if (section[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) {
+            if (section[i].Characteristics & IMAGE_SCN_MEM_WRITE) {
+                sectionPermissions = PAGE_EXECUTE_READWRITE;
+            } else if (section[i].Characteristics & IMAGE_SCN_MEM_READ) {
+                sectionPermissions = PAGE_EXECUTE_READ;
+            } else {
+                sectionPermissions = PAGE_EXECUTE;
+            }
+        } else if (section[i].Characteristics & IMAGE_SCN_MEM_WRITE) {
+            sectionPermissions = PAGE_READWRITE;
+        } else if (section[i].Characteristics & IMAGE_SCN_MEM_READ) {
+            sectionPermissions = PAGE_READONLY;
+        }
+
+        WriteProcessMemory(handle, PCHAR(memalloc) + section[i].VirtualAddress,
+            PCHAR(vpointer) + section[i].PointerToRawData, section[i].SizeOfRawData, 0);
+        VirtualProtect(PCHAR(memalloc) + section[i].VirtualAddress, section[i].SizeOfRawData, sectionPermissions, &dwValueD);
+    }
+
+    dwValueB = (DWORD) &(nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]);
+    dwValueC = (DWORD)(nt->OptionalHeader.ImageBase) +
+               ((PIMAGE_DATA_DIRECTORY)dwValueB)->VirtualAddress;
+
+    while (((PIMAGE_IMPORT_DESCRIPTOR)dwValueC)->Name) {
+        libname = (LPSTR)(nt->OptionalHeader.ImageBase +
+                          ((PIMAGE_IMPORT_DESCRIPTOR)dwValueC)->Name);
+        laddress = LoadLibrary(libname);
+
+        dwValueA = nt->OptionalHeader.ImageBase +
+                   ((PIMAGE_IMPORT_DESCRIPTOR)dwValueC)->FirstThunk;
+
+        dwValueD = nt->OptionalHeader.ImageBase +
+                   ((PIMAGE_IMPORT_DESCRIPTOR)dwValueC)->OriginalFirstThunk;
+
+        while (DEREF_32(dwValueA)) {
+            if (((PIMAGE_THUNK_DATA)dwValueD)->u1.Ordinal & IMAGE_ORDINAL_FLAG) {
+                DWORD ordinal = ((PIMAGE_THUNK_DATA)dwValueD)->u1.Ordinal & 0xFFFF;
+                DEREF_32(dwValueA) = (DWORD)GetProcAddress(laddress, (LPCSTR)ordinal);
+            } else {
+                dwValueD = nt->OptionalHeader.ImageBase + DEREF_32(dwValueA);
+                LPSTR Fname = (LPSTR)((PIMAGE_IMPORT_BY_NAME)dwValueD)->Name;
+                DEREF_32(dwValueA) = (DWORD)GetProcAddress(laddress, Fname);
+            }
+            dwValueA += 4;
+            dwValueD += 4;
+        }
+
+        dwValueC += sizeof(IMAGE_IMPORT_DESCRIPTOR);
+    }
+
+    ((void(*)(void))EntryAddr)();
+}
